@@ -1,0 +1,18 @@
+{
+  "name": "line-with-forklift",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "ts-node index.ts"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@actyx/pond": "^3.0.2",
+    "ts-node": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^16.4.10"
+  }
+}
