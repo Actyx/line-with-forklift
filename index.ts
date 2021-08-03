@@ -1,185 +1,205 @@
 import { Fish, FishId, Pond, Tags } from '@actyx/pond'
 
-export const MACHINE_BUFFER_SIZE = 3;
-export const ROBOT_IN_BUFFER_SIZE = 9;
-export const ROBOT_OUT_BUFFER_SIZE = 9;
+const DEBUG = !!process.env.DEBUG
+
 interface MachineState {
     bufferQty: number
 }
 
-interface MachinePartsEvent {
-    type: 'produced' | 'picked-up'
-    qty: number
-}
-
-export const MachineFish: Fish<MachineState, MachinePartsEvent> = {
-    fishId: FishId.of('machine', 'machine', 0),
-    initialState: { bufferQty: 0 },
-    where: Tags<MachinePartsEvent>('machine'),
-    onEvent: (state, event) => {
-        if (event.type === 'produced') {
-            return { ...state, bufferQty: state.bufferQty + event.qty }
-        } else if (event.type === 'picked-up') {
-            return { ...state, bufferQty: state.bufferQty - event.qty }
-        }
-        return state
-    }
-}
-
-function emitMachineProducedParts(pond: Pond, qty: number) {
-    pond.emit(Tags<MachinePartsEvent>('machine'), {
-        type: 'produced',
-        qty: qty,
-    }).toPromise().catch(console.error)
-}
-
-function emitMachinePartsPickedUp(pond: Pond, qty: number) {
-    pond.emit(Tags<MachinePartsEvent>('machine'), {
-        type: 'picked-up',
-        qty: qty,
-    }).toPromise().catch(console.error)
-}
-
-interface RobotPartsEvent {
-    type: 'picked-up-from-machine' | 'packaged' | 'picked-up'
+interface MachineBufferChanged {
     qty: number
 }
 
 interface RobotState {
-    inputQty: number
-    packagedQty: number
+    inputBufferQty: number
+    outputBufferQty: number
 }
 
-function emitRobotPickedUpFromMachine(pond: Pond, qty: number) {
-    pond.emit(Tags<RobotPartsEvent>('robot'), {
-        type: 'picked-up-from-machine',
-        qty: qty,
-    }).toPromise().catch(console.error)
+interface RobotBufferChanged {
+    buffer: 'input' | 'output'
+    qty: number
 }
 
-function emitRobotPackaged(pond: Pond, qty: number) {
-    pond.emit(Tags<RobotPartsEvent>('robot'), {
-        type: 'packaged',
-        qty: qty,
-    }).toPromise().catch(console.error)
+function emitRobotInputBufferChanged(pond: Pond, qty: number) {
+    const event: RobotBufferChanged = {
+        buffer: 'input',
+        qty
+    }
+    pond.emit(Tags('robot'), event)
 }
 
-function emitRobotPartsPickedUp(pond: Pond, qty: number) {
-    pond.emit(Tags<RobotPartsEvent>('robot'), {
-        type: 'picked-up',
-        qty: qty,
-    }).toPromise().catch(console.error)
+function emitRobotOutputBufferChanged(pond: Pond, qty: number) {
+    const event: RobotBufferChanged = {
+        buffer: 'output',
+        qty
+    }
+    pond.emit(Tags('robot'), event)
+}
+
+function emitMachineBufferChanged(pond: Pond, qty: number) {
+    const event: MachineBufferChanged = {
+        qty
+    }
+    pond.emit(Tags('machine'), event)
 }
 
 
-export const RobotFish: Fish<RobotState, RobotPartsEvent> = {
-    fishId: FishId.of('robot', 'robot', 0),
-    initialState: { inputQty: 0, packagedQty: 0 },
-    where: Tags<RobotPartsEvent>('robot'),
-    onEvent: (state, event) => {
-        if (event.type === 'picked-up-from-machine') {
-            return { ...state, inputQty: state.inputQty + event.qty}
-        } else if (event.type === 'packaged') {
-            return {
-                ...state,
-                inputQty: state.inputQty - event.qty,
-                packagedQty: state.packagedQty + event.qty,
-            }
-        } else if (event.type === 'picked-up') {
-            return { ...state, packagedQty: state.packagedQty - event.qty }
+const MachineFish: Fish<MachineState, MachineBufferChanged> = {
+    fishId: FishId.of('machine', 'machine', 0),
+    where: Tags('machine'),
+    initialState: { bufferQty: 0 },
+    onEvent: function (state, event) {
+        const newState: MachineState = {
+            ...state,
+            bufferQty: state.bufferQty + event.qty
         }
-        return state
+
+        if (DEBUG) {
+            console.log(`machine state transitioned with event`, event)
+            console.log(`was:`, state)
+            console.log(`now:`, newState)
+        }
+        return newState
     }
 }
 
+const RobotFish: Fish<RobotState, RobotBufferChanged> = {
+    fishId: FishId.of('robot', 'robot', 0),
+    where: Tags('robot'),
+    initialState: { inputBufferQty: 0, outputBufferQty: 0 },
+    onEvent: function (state, event) {
+        let newState: RobotState = state;
+        if (event.buffer === 'input') {
+            newState = {
+                ...state,
+                inputBufferQty: state.inputBufferQty + event.qty
+            }
+        } else if (event.buffer === 'output') {
+            newState = {
+                ...state,
+                outputBufferQty: state.outputBufferQty + event.qty
+            }
+        }
+        if (DEBUG) {
+            console.log(`robot state transitioned with event`, event)
+            console.log(`was:`, state)
+            console.log(`now:`, newState)
+        }
+        return newState
+    }
+}
+
+async function runRobot(pond: Pond) {
+
+    let machineState: MachineState | undefined = undefined
+    let robotState: RobotState | undefined = undefined
+
+    let currentlyPickingUp = false
+    let currentlyPackaging = false
+
+    function showState() {
+        if (!DEBUG) { console.clear() }
+        if (currentlyPackaging) {
+            console.log(`Robot: 🟢 PACKAGING`)
+        } else if (currentlyPickingUp) {
+            console.log(`Robot: 🟠 PICKING UP`)
+        } else {
+            console.log(`Robot: ⚪️ IDLE`)
+        }
+    }
+
+    pond.observe(MachineFish, state => {
+        machineState = state
+        onChange()
+    })
+
+    pond.observe(RobotFish, state => {
+        robotState = state
+        onChange()
+    })
+
+    function onChange() {
+        showState()
+        if (!machineState || !robotState || currentlyPickingUp || currentlyPackaging) {
+            return
+        }
+
+        if (machineState.bufferQty > 0 && robotState.inputBufferQty + 1 < 9) {
+            currentlyPickingUp = true
+            showState()
+            setTimeout(() => {
+                emitMachineBufferChanged(pond, -1)
+                emitRobotInputBufferChanged(pond, 1)
+                currentlyPickingUp = false
+            }, 2000)
+            return
+        }
+
+        if (robotState.inputBufferQty > 0 && robotState.outputBufferQty + 1 < 9) {
+            currentlyPackaging = true
+            showState()
+            setTimeout(() => {
+                emitRobotInputBufferChanged(pond, -1)
+                emitRobotOutputBufferChanged(pond, 1)
+                currentlyPackaging = false
+            }, 3000)
+            return
+        }
+    }
+}
 
 async function runMachine(pond: Pond) {
 
     let currentlyProducing = false
 
-    pond.observe(MachineFish, state => {
-        console.clear()
-        if (!currentlyProducing && state.bufferQty < MACHINE_BUFFER_SIZE) {
-            currentlyProducing = true
-            console.log(`🟢 MACHINE PRODUCING`)
-            setTimeout(function () {
-                currentlyProducing = false
-                emitMachineProducedParts(pond, 1)
-            }, 2_000)
+    function showState() {
+        if (!DEBUG) { console.clear() }
+        if (currentlyProducing) {
+            console.log(`Machine: 🟢 PRODUCING`)
         } else {
-            console.log(`${currentlyProducing ? '🟢 MACHINE PRODUCING' : '⚪️ MACHINE IDLE'}`)
+            console.log(`Machine: ⚪️ IDLE`)
+        }
+
+    }
+
+    pond.observe(MachineFish, state => {
+        showState()
+        if (!currentlyProducing && state.bufferQty < 5) {
+            currentlyProducing = true
+            showState()
+            setTimeout(() => {
+                emitMachineBufferChanged(pond, 1)
+                currentlyProducing = false
+            }, 4000)
         }
     })
 }
 
-async function runRobot(pond: Pond) {
-    let robotState: RobotState | undefined = undefined;
-    let machineState: MachineState | undefined = undefined;
-    let currentlyPickingUp: boolean = false
-    let currentlyPackaging: boolean = false
+async function runForklift(pond: Pond) {
 
-    function printState() {
+    let currentlyDroppingOff = false
+    function showState() {
         console.clear()
-        console.log(`${currentlyPackaging ? '🟢 ROBOT PACKAGING' : currentlyPickingUp ? '🟠 ROBOT PICKING UP' : '⚪️ ROBOT IDLE'}`)
-    }
-
-    function onChanged() {
-        printState()
-        if (!robotState || !machineState || currentlyPickingUp || currentlyPackaging) { return }
-        if (machineState.bufferQty > 1 && robotState.inputQty < ROBOT_IN_BUFFER_SIZE) {
-            currentlyPickingUp = true
-            printState()
-            setTimeout(function () {
-                printState()
-                emitMachinePartsPickedUp(pond, 2)
-                emitRobotPickedUpFromMachine(pond, 2)
-                currentlyPickingUp = false
-            }, 4_000)
-        }
-
-        if (robotState.inputQty > 0 && robotState.packagedQty < ROBOT_OUT_BUFFER_SIZE) {
-            currentlyPackaging = true
-            printState()
-            setTimeout(function () {
-                printState()
-                emitRobotPackaged(pond, 1)
-                currentlyPackaging = false
-            }, 4_000)
+        if (currentlyDroppingOff) {
+            console.log(`Forklift: 🟢 DROPPING OFF`)
+        } else {
+            console.log(`Forklift: ⚪️ IDLE`)
         }
     }
 
     pond.observe(RobotFish, state => {
-        robotState = state;
-        onChanged()
-    })
-
-    pond.observe(MachineFish, state => {
-        machineState = state
-        onChanged()
-    })
-
-}
-
-async function runForklift(pond: Pond) {
-    let currentlyDroppingOff = false
-    
-    pond.observe(RobotFish, state => {        
-        if (!currentlyDroppingOff && state.packagedQty > 0) {
+        showState()
+        if (!currentlyDroppingOff && state.outputBufferQty > 0) {
             currentlyDroppingOff = true
-            emitRobotPartsPickedUp(pond, state.packagedQty)
-            setTimeout(function () {
-                let dur = 20
+            emitRobotOutputBufferChanged(pond, -1 * state.outputBufferQty)
+            showState()
+            setTimeout(() => {
                 currentlyDroppingOff = false
-                let intervalId = setInterval(() => {
-                    console.clear()
-                    console.log(`${currentlyDroppingOff ? '🟢 FORKLIFT WORKING' : '⚪️ FORKLIFT IDLE'}`)
-                    console.log('Picking up next batch in ' + dur + ' seconds')
-                    dur = dur - 1;
-                    if(dur === 0) clearInterval(intervalId)
-                }, 1000)
-            }, 20_000)
+                showState()
+            }, 10000)
         }
     })
+
 }
 
 async function runDashboard(pond: Pond) {
@@ -187,47 +207,49 @@ async function runDashboard(pond: Pond) {
     let machineState: MachineState | undefined = undefined
     let robotState: RobotState | undefined = undefined
 
-    function onChanged() {
-        if (!machineState || !robotState) { return }
+    function showDashboard() {
+        if (!machineState || !robotState) {
+            return
+        }
         console.clear()
-        console.log(`⚙️  Machine`)
-        console.log(` . out: ${machineState.bufferQty} ${[...Array(Math.max(0, machineState.bufferQty))].map(() => "📦").join('')}`)
-        console.log(`🤖 Robot`)
-        console.log(` . in:  ${robotState.inputQty} ${[...Array(Math.max(0, robotState.inputQty))].map(() => "📦").join('')}`)
-        console.log(` . out: ${robotState.packagedQty} ${[...Array(Math.max(0, robotState.packagedQty))].map(() => "📦").join('')}`)
-
+        console.log('MACHINE')
+        console.log(`| buffer: ${machineState.bufferQty} ${[...Array(machineState.bufferQty)].map(() => '🥽').join('')}`)
+        console.log('ROBOT')
+        console.log(`| input:  ${robotState.inputBufferQty} ${[...Array(robotState.inputBufferQty)].map(() => '🥽').join('')}`)
+        console.log(`| output: ${robotState.outputBufferQty} ${[...Array(robotState.outputBufferQty)].map(() => '📦').join('')}`)
     }
 
     pond.observe(MachineFish, state => {
         machineState = state
-        onChanged()
+        showDashboard()
     })
     pond.observe(RobotFish, state => {
         robotState = state
-        onChanged()
+        showDashboard()
     })
-
 
 }
 
 (async () => {
+
     const pond = await Pond.default({
         appId: 'com.example.app',
-        displayName: 'My Demo',
         version: '1.0.0',
+        displayName: 'Example App'
     })
 
-    const program = process.argv[2]
-    if (program === 'machine') {
-        await runMachine(pond)
-    } else if (program === 'robot') {
-        await runRobot(pond)
-    } else if (program === 'forklift') {
-        await runForklift(pond)
-    } else if (program === 'dashboard') {
-        await runDashboard(pond)
-    } else {
-        console.log(`please set which program to run`)
-        process.exit(1)
+    switch (process.argv[2]) {
+        case 'robot': {
+            return await runRobot(pond)
+        }
+        case 'forklift': {
+            return await runForklift(pond)
+        }
+        case 'machine': {
+            return await runMachine(pond)
+        }
+        case 'dashboard': {
+            return await runDashboard(pond)
+        }
     }
 })()
